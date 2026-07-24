@@ -1,87 +1,155 @@
 package neofontrender.addons.effects;
 
+import com.google.gson.JsonSyntaxException;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiScreen;
 import net.minecraft.client.renderer.BufferBuilder;
 import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.client.renderer.Tessellator;
 import net.minecraft.client.renderer.vertex.DefaultVertexFormats;
+import net.minecraft.client.resources.IResourceManager;
+import net.minecraft.client.resources.IResourceManagerReloadListener;
 import net.minecraft.client.shader.Shader;
 import net.minecraft.client.shader.ShaderGroup;
 import net.minecraft.client.shader.ShaderUniform;
 import net.minecraft.util.ResourceLocation;
 import net.minecraftforge.client.event.GuiOpenEvent;
+import net.minecraftforge.client.event.GuiScreenEvent;
+import net.minecraftforge.fml.common.eventhandler.EventPriority;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import neofontrender.addons.mixin.AccessorShaderGroup;
 import neofontrender.addons.ui.NfrUiEnhancements;
 import org.apache.logging.log4j.Level;
 
-public enum ScreenEffectsRenderer {
+import java.io.IOException;
+
+/**
+ * Renders in-world screen effects without taking ownership of EntityRenderer's global ShaderGroup.
+ *
+ * <p>Cleanroom's Kirino renderer finalizes the world into Minecraft's framebuffer immediately before
+ * the GUI is drawn. Running our private post chain from DrawScreenEvent.Pre therefore consumes the
+ * completed frame and cannot race Kirino's HDR/ping-pong framebuffers or another mod's entity shader.</p>
+ */
+public enum ScreenEffectsRenderer implements IResourceManagerReloadListener {
     INSTANCE;
 
     private static final ResourceLocation BLUR = new ResourceLocation(
             NfrUiEnhancements.MOD_ID, "shaders/post/ui_blur.json");
+
     private long openedNanos;
-    private boolean ownsShader;
+    private ShaderGroup blurGroup;
+    private int framebufferWidth = -1;
+    private int framebufferHeight = -1;
+    private boolean shaderCreationFailed;
 
     @SubscribeEvent
     public void onGuiOpen(GuiOpenEvent event) {
         openedNanos = System.nanoTime();
-        Minecraft mc = Minecraft.getMinecraft();
-        if (event.getGui() == null || mc.world == null || !ScreenEffectsConfig.enabled || !ScreenEffectsConfig.blur) {
-            releaseShader(mc);
-            return;
+        if (event.getGui() == null || !ScreenEffectsConfig.enabled || !ScreenEffectsConfig.blur) {
+            discardShader();
         }
-        installShader(mc);
     }
 
+    /** Runs after the world (including Kirino's finalizer) and before any GUI pixels are submitted. */
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public void beforeScreenDraw(GuiScreenEvent.DrawScreenEvent.Pre event) {
+        Minecraft mc = Minecraft.getMinecraft();
+        if (event.getGui() == null || mc.world == null || !ScreenEffectsConfig.enabled) return;
+
+        float progress = fadeProgress();
+        if (ScreenEffectsConfig.blur) renderBlur(mc);
+        if (ScreenEffectsConfig.gradient) drawGradient(event.getGui().width, event.getGui().height, progress);
+    }
+
+    /** Cancel the opaque vanilla dirt/dim background; the replacement was already drawn in Pre. */
     public boolean drawBackground(GuiScreen screen) {
         Minecraft mc = Minecraft.getMinecraft();
-        if (!ScreenEffectsConfig.enabled || mc.world == null || (!ScreenEffectsConfig.blur && !ScreenEffectsConfig.gradient)) {
-            return false;
-        }
-        if (ScreenEffectsConfig.blur && ownsShader && mc.entityRenderer.getShaderGroup() == null) installShader(mc);
-        if (ScreenEffectsConfig.gradient) drawGradient(screen.width, screen.height, fadeProgress());
-        return true;
+        return ScreenEffectsConfig.enabled && mc.world != null
+                && (ScreenEffectsConfig.blur || ScreenEffectsConfig.gradient);
     }
 
     public void configChanged() {
-        Minecraft mc = Minecraft.getMinecraft();
         openedNanos = System.nanoTime();
-        if (mc.currentScreen == null || mc.world == null || !ScreenEffectsConfig.enabled || !ScreenEffectsConfig.blur) {
-            releaseShader(mc);
-        } else {
-            if (ownsShader) releaseShader(mc);
-            installShader(mc);
-        }
+        shaderCreationFailed = false;
+        if (!ScreenEffectsConfig.enabled || !ScreenEffectsConfig.blur) discardShader();
     }
 
-    private void installShader(Minecraft mc) {
-        if (ownsShader && mc.entityRenderer.getShaderGroup() != null) {
-            updateRadius(mc.entityRenderer.getShaderGroup());
+    @Override
+    public void onResourceManagerReload(IResourceManager resourceManager) {
+        shaderCreationFailed = false;
+        discardShader();
+    }
+
+    private void renderBlur(Minecraft mc) {
+        ShaderGroup group = ensureShader(mc);
+        if (group == null) {
+            restoreGuiTarget(mc);
             return;
         }
-        if (mc.entityRenderer.isShaderActive()) return;
-        mc.entityRenderer.loadShader(BLUR);
-        ShaderGroup group = mc.entityRenderer.getShaderGroup();
-        ownsShader = group != null;
-        if (ownsShader) updateRadius(group);
-    }
 
-    private void updateRadius(ShaderGroup group) {
         try {
-            for (Shader pass : ((AccessorShaderGroup) group).nfrUi$getShaders()) {
-                ShaderUniform radius = pass.getShaderManager().getShaderUniform("Radius");
-                if (radius != null) radius.set(ScreenEffectsConfig.blurRadius);
-            }
+            updateRadius(group, animatedRadius());
+            group.render(mc.getRenderPartialTicks());
         } catch (Throwable throwable) {
-            NfrUiEnhancements.LOGGER.log(Level.WARN, "Could not update UI blur radius", throwable);
+            NfrUiEnhancements.LOGGER.log(Level.WARN,
+                    "UI blur pass failed; disabling it until the next resource reload", throwable);
+            shaderCreationFailed = true;
+            discardShader();
+        } finally {
+            restoreGuiTarget(mc);
         }
     }
 
-    private void releaseShader(Minecraft mc) {
-        if (ownsShader) mc.entityRenderer.stopUseShader();
-        ownsShader = false;
+    private static void restoreGuiTarget(Minecraft mc) {
+        // ShaderGroup leaves its last output bound and changes the projection matrices. The GUI
+        // event expects Minecraft's main target and the standard scaled overlay projection.
+        mc.getFramebuffer().bindFramebuffer(true);
+        mc.entityRenderer.setupOverlayRendering();
+        GlStateManager.color(1.0F, 1.0F, 1.0F, 1.0F);
+    }
+
+    private ShaderGroup ensureShader(Minecraft mc) {
+        if (shaderCreationFailed) return null;
+        int width = mc.displayWidth;
+        int height = mc.displayHeight;
+        if (blurGroup != null && width == framebufferWidth && height == framebufferHeight) return blurGroup;
+
+        discardShader();
+        try {
+            blurGroup = new ShaderGroup(mc.getTextureManager(), mc.getResourceManager(), mc.getFramebuffer(), BLUR);
+            blurGroup.createBindFramebuffers(width, height);
+            framebufferWidth = width;
+            framebufferHeight = height;
+            return blurGroup;
+        } catch (IOException | JsonSyntaxException exception) {
+            shaderCreationFailed = true;
+            NfrUiEnhancements.LOGGER.log(Level.WARN,
+                    "Could not create the private UI blur shader; blur is disabled until resource reload", exception);
+            discardShader();
+            return null;
+        }
+    }
+
+    private void updateRadius(ShaderGroup group, float amount) {
+        for (Shader pass : ((AccessorShaderGroup) group).nfrUi$getShaders()) {
+            ShaderUniform radius = pass.getShaderManager().getShaderUniform("Radius");
+            if (radius != null) radius.set(amount);
+        }
+    }
+
+    private float animatedRadius() {
+        // Minecraft 1.12's built-in blur kernel is undefined at radius zero and can output a
+        // flat grey framebuffer. Radius 1 is its neutral, valid starting point.
+        return 1.0F + Math.max(0.0F, ScreenEffectsConfig.blurRadius - 1.0F) * fadeProgress();
+    }
+
+    private void discardShader() {
+        if (blurGroup != null) {
+            blurGroup.deleteShaderGroup();
+            blurGroup = null;
+        }
+        framebufferWidth = -1;
+        framebufferHeight = -1;
     }
 
     private float fadeProgress() {

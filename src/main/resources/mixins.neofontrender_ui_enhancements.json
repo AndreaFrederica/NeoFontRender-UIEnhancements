@@ -9,10 +9,23 @@
   "server": [],
   "client": [
     "AccessorShaderGroup",
+    "AccessorGuiContainer",
+    "MixinGuiChatAnimation",
+    "MixinGuiContainerCreativeSmoothScroll",
+    "MixinGuiNewChatSmoothScroll",
+    "MixinGuiNewChatHistory",
     "MixinForgeGuiScrollingListSmoothScroll",
     "MixinGuiScreenBackground",
     "MixinGuiSlotSmoothScroll",
     "MixinGuiTextFieldCursor",
-    "MixinModularTextFieldCursor"
+    "MixinModularTextFieldCursor",
+    "compat.MixinObscureHeaderComponent",
+    "compat.MixinObscureTooltipState",
+    "compat.MixinHeiCollapsedGroupTooltip",
+    "compat.MixinHeiTooltipRenderer",
+    "tabbychat.IChatTabCompleter",
+    "tabbychat.MixinChatTabCompleter",
+    "tabbychat.MixinGuiChat",
+    "tabbychat.IGuiIngame"
   ]
 }

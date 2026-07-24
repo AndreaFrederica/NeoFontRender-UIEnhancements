@@ -3,6 +3,7 @@ package neofontrender.addons.tooltips;
 import icyllis.arc3d.core.Color;
 import icyllis.arc3d.core.MathUtil;
 import net.minecraft.client.gui.FontRenderer;
+import net.minecraft.item.ItemStack;
 import net.minecraft.client.renderer.BufferBuilder;
 import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.client.renderer.RenderHelper;
@@ -119,6 +120,104 @@ final class ModernTooltipRenderer {
             GlStateManager.enableDepth();
             GlStateManager.enableLighting();
             RenderHelper.enableGUIStandardItemLighting();
+        }
+    }
+
+    /** Draws only NFR's panel/frame around a foreign renderer's already-computed bounds. */
+    static void drawCompatibleBackground(int x, int y, int width, int height, ItemStack stack) {
+        int[] fill = TooltipConfig.fillColors.clone();
+        int[] border = TooltipConfig.borderColors.clone();
+        boolean spectrum = false;
+        if (TooltipConfig.adaptiveBorder && stack != null && !stack.isEmpty()) {
+            AdaptiveBorderColors.Result adaptive = AdaptiveBorderColors.compute(stack, stack.getDisplayName(), border);
+            border = adaptive.colors;
+            spectrum = adaptive.spectrum;
+        }
+        spectrum |= "spectrum".equals(TooltipConfig.borderShading);
+        applyBorderShading(border, TooltipConfig.borderShading);
+
+        float left = x;
+        float top = y;
+        float right = x + width;
+        float bottom = y + height;
+        float radius = TooltipConfig.rounded ? TooltipConfig.cornerRadius : 0.01F;
+        boolean cullEnabled = GL11.glIsEnabled(GL11.GL_CULL_FACE);
+
+        GlStateManager.disableLighting();
+        GlStateManager.disableDepth();
+        RenderHelper.disableStandardItemLighting();
+        GlStateManager.enableBlend();
+        GlStateManager.tryBlendFuncSeparate(
+                GlStateManager.SourceFactor.SRC_ALPHA,
+                GlStateManager.DestFactor.ONE_MINUS_SRC_ALPHA,
+                GlStateManager.SourceFactor.ONE,
+                GlStateManager.DestFactor.ZERO);
+        GlStateManager.disableTexture2D();
+        GlStateManager.disableAlpha();
+        GlStateManager.disableCull();
+        GlStateManager.shadeModel(GL11.GL_SMOOTH);
+        try {
+            boolean analyticStyle = "modernui".equals(TooltipConfig.renderStyle)
+                    || "mica".equals(TooltipConfig.renderStyle);
+            boolean shaderDrawn = analyticStyle
+                    && (TooltipConfig.rounded || "mica".equals(TooltipConfig.renderStyle))
+                    && ModernUiTooltipShader.draw(left, top, right, bottom, radius, fill, border,
+                    spectrum, "mica".equals(TooltipConfig.renderStyle));
+            if (!shaderDrawn) {
+                if (spectrum) applyFallbackSpectrum(border);
+                drawShadow(left, top, right, bottom, radius);
+                drawRoundedFill(left, top, right, bottom, radius, fill);
+                drawRoundedBorder(left, top, right, bottom, radius,
+                        Math.min(TooltipConfig.borderWidth, Math.max(0.5F, radius)), border);
+            }
+        } finally {
+            GlStateManager.shadeModel(GL11.GL_FLAT);
+            GlStateManager.enableAlpha();
+            GlStateManager.enableTexture2D();
+            if (cullEnabled) GlStateManager.enableCull();
+            else GlStateManager.disableCull();
+            GlStateManager.disableBlend();
+            GlStateManager.enableDepth();
+            GlStateManager.enableLighting();
+            RenderHelper.enableGUIStandardItemLighting();
+        }
+    }
+
+    /** Draws NFR's title divider inside a foreign tooltip while preserving its content renderer. */
+    static void drawCompatibleDivider(int x, int y, int width, ItemStack stack) {
+        if (!TooltipConfig.titleBreak || width <= 0) return;
+
+        int[] border = TooltipConfig.borderColors.clone();
+        boolean spectrum = false;
+        if (TooltipConfig.adaptiveBorder && stack != null && !stack.isEmpty()) {
+            AdaptiveBorderColors.Result adaptive = AdaptiveBorderColors.compute(stack, stack.getDisplayName(), border);
+            border = adaptive.colors;
+            spectrum = adaptive.spectrum;
+        }
+        spectrum |= "spectrum".equals(TooltipConfig.borderShading);
+        applyBorderShading(border, TooltipConfig.borderShading);
+        if (spectrum) applyFallbackSpectrum(border);
+
+        GlStateManager.disableTexture2D();
+        GlStateManager.enableBlend();
+        GlStateManager.disableAlpha();
+        GlStateManager.tryBlendFuncSeparate(
+                GlStateManager.SourceFactor.SRC_ALPHA,
+                GlStateManager.DestFactor.ONE_MINUS_SRC_ALPHA,
+                GlStateManager.SourceFactor.ONE,
+                GlStateManager.DestFactor.ZERO);
+        GlStateManager.shadeModel(GL11.GL_SMOOTH);
+        try {
+            drawQuad(x, y, x + width, y + 1.0F,
+                    withAlpha(border[3], TooltipConfig.dividerAlpha),
+                    withAlpha(border[2], TooltipConfig.dividerAlpha),
+                    withAlpha(border[2], TooltipConfig.dividerAlpha),
+                    withAlpha(border[3], TooltipConfig.dividerAlpha));
+        } finally {
+            GlStateManager.shadeModel(GL11.GL_FLAT);
+            GlStateManager.enableAlpha();
+            GlStateManager.disableBlend();
+            GlStateManager.enableTexture2D();
         }
     }
 

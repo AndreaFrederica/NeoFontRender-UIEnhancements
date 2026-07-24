@@ -7,6 +7,8 @@ import neofontrender.addons.tooltips.TooltipModule;
 import neofontrender.addons.scrolling.SmoothScrollingModule;
 import neofontrender.addons.input.TextInputModule;
 import neofontrender.addons.effects.ScreenEffectsModule;
+import neofontrender.addons.chat.EnhancedChatModule;
+import neofontrender.addons.hud.HudBarsModule;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -17,7 +19,7 @@ import java.util.List;
         modid = NfrUiEnhancements.MOD_ID,
         name = "NFR UI Enhancements",
         version = NfrUiEnhancements.VERSION,
-        dependencies = "required-after:neofontrender@[0.3.4,)",
+        dependencies = "required-after:neofontrender@[0.3.5,)",
         clientSideOnly = true,
         acceptedMinecraftVersions = "[1.12,1.13)"
 )
@@ -30,12 +32,15 @@ public final class NfrUiEnhancements {
             new SmoothScrollingModule(),
             new TextInputModule(),
             new ScreenEffectsModule(),
+            new HudBarsModule(),
+            new EnhancedChatModule(),
             new TooltipModule()
     );
 
     @Mod.EventHandler
     public void preInit(FMLPreInitializationEvent event) {
         UiEnhancementsConfig.open();
+        UiEnhancementsInfoContributions.register();
         MODULES.forEach(UiEnhancementModule::preInit);
     }
 
